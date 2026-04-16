@@ -1,0 +1,634 @@
+package com.example.mysmartcanteen
+
+import android.os.Bundle
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.setContent
+import androidx.compose.animation.*
+import androidx.compose.animation.core.*
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.*
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.composed
+import androidx.compose.ui.draw.blur
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import kotlinx.coroutines.delay
+import kotlin.random.Random
+
+// ==========================================
+// 1. MODELS & STATE
+// ==========================================
+data class MenuItem(
+    val id: String = "",
+    val name: String = "",
+    val emoji: String = "🍽️",
+    val price: Double = 0.0,
+    val description: String = "",
+    val ingredients: String = "Made with fresh ingredients everyday."
+)
+
+data class Order(
+    val token: String,
+    val studentName: String,
+    val items: List<MenuItem>,
+    val totalAmount: Double,
+    val paymentMethod: String,
+    val isPaid: Boolean,
+    var status: String = "Preparing" // "Preparing" or "Ready"
+)
+
+val PrimaryColor = Color(0xFFFF6D00)
+val DarkBackground = Color(0xFF0F172A)
+val CardBackground = Color(0xFF1E293B)
+val TextGray = Color(0xFF94A3B8)
+
+// ==========================================
+// 2. MAIN APP COMPONENT
+// ==========================================
+class MainActivity : ComponentActivity() {
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        setContent {
+            MaterialTheme(
+                colorScheme = darkColorScheme(
+                    primary = PrimaryColor, background = DarkBackground, surface = CardBackground,
+                    onPrimary = Color.White, onBackground = Color.White, onSurface = Color.White
+                )
+            ) {
+                Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
+                    CanteenApp()
+                }
+            }
+        }
+    }
+}
+
+// ==========================================
+// 3. ADVANCED SENSORY MODIFIERS
+// ==========================================
+
+// Realistic bouncy button physics WITH HAPTICS!
+fun Modifier.bounceClick(onClick: () -> Unit): Modifier = composed {
+    var isPressed by remember { mutableStateOf(false) }
+    val haptic = LocalHapticFeedback.current
+    val scale by animateFloatAsState(
+        targetValue = if (isPressed) 0.92f else 1f,
+        animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy, stiffness = Spring.StiffnessLow),
+        label = "Bounce"
+    )
+
+    this
+        .graphicsLayer { scaleX = scale; scaleY = scale }
+        .pointerInput(isPressed) {
+            detectTapGestures(
+                onPress = {
+                    isPressed = true
+                    haptic.performHapticFeedback(HapticFeedbackType.LongPress) // Buzz on Touch!
+                    tryAwaitRelease()
+                    isPressed = false
+                    onClick()
+                }
+            )
+        }
+}
+
+// Physics mathematical confetti system
+data class Particle(
+    var x: Float, var y: Float, var speedX: Float, var speedY: Float, val color: Color, var radius: Float
+)
+
+@Composable
+fun AppConfetti() {
+    var particles by remember { mutableStateOf<List<Particle>?>(null) }
+    var ticks by remember { mutableStateOf(0) }
+    
+    LaunchedEffect(Unit) {
+        while(true) { withFrameMillis { ticks++ } }
+    }
+
+    Canvas(modifier = Modifier.fillMaxSize()) {
+        ticks.let {} 
+        if (particles == null) {
+            particles = List(150) {
+                Particle(
+                    x = size.width / 2, y = size.height / 2,
+                    speedX = Random.nextFloat() * 40 - 20, speedY = -(Random.nextFloat() * 40 + 10),
+                    color = listOf(PrimaryColor, Color(0xFF10B981), Color(0xFF3B82F6), Color(0xFFF59E0B), Color.White).random(),
+                    radius = Random.nextFloat() * 15f + 8f
+                )
+            }
+        }
+        particles?.forEach { p ->
+            p.x += p.speedX; p.y += p.speedY; p.speedY += 1.2f 
+            drawCircle(color = p.color, radius = p.radius, center = Offset(p.x, p.y))
+        }
+    }
+}
+
+// ==========================================
+// 4. ROUTER & GLOBAL STATE
+// ==========================================
+
+@Composable
+fun CanteenApp() {
+    var currentScreen by remember { mutableStateOf("landing") }
+    var studentName by remember { mutableStateOf("Guest") }
+    var cartItems by remember { mutableStateOf(listOf<MenuItem>()) }
+    val globalOrders = remember { mutableStateListOf<Order>() }
+    var lastGeneratedToken by remember { mutableStateOf("") }
+
+    AnimatedContent(
+        targetState = currentScreen,
+        transitionSpec = { fadeIn(tween(400)) togetherWith fadeOut(tween(400)) }, 
+        label = "App Transition"
+    ) { screen ->
+        when (screen) {
+            "landing" -> LandingScreen(
+                onStudentClick = { currentScreen = "student_login" }, onStaffClick = { currentScreen = "staff_login" }
+            )
+            "student_login" -> StudentLoginScreen(
+                onLoginSuccess = { name -> studentName = name; currentScreen = "student_home" }, onBack = { currentScreen = "landing" }
+            )
+            "staff_login" -> StaffLoginScreen(
+                onLoginSuccess = { currentScreen = "admin_dashboard" }, onBack = { currentScreen = "landing" }
+            )
+            "student_home" -> CustomerHomeScreen(
+                studentName = studentName, cartCount = cartItems.size, globalOrders = globalOrders,
+                onNavigateToCart = { currentScreen = "cart" }, onAddToCart = { item -> cartItems = cartItems + item },
+                onLogout = { currentScreen = "landing"; cartItems = emptyList() }
+            )
+            "cart" -> CartScreen(
+                cartItems = cartItems, onCheckoutOnline = { currentScreen = "qr_payment" },
+                onCheckoutCounter = { 
+                    val token = "#" + Random.nextInt(100, 999).toString()
+                    globalOrders.add(Order(token, studentName, cartItems, cartItems.sumOf { it.price }, "Pay at Counter", false))
+                    lastGeneratedToken = token; cartItems = emptyList(); currentScreen = "order_success"
+                }, onGoBack = { currentScreen = "student_home" }
+            )
+            "qr_payment" -> PaymentQRScreen(
+                amount = cartItems.sumOf { it.price },
+                onPaymentVerified = {
+                    val token = "#" + Random.nextInt(100, 999).toString()
+                    globalOrders.add(Order(token, studentName, cartItems, cartItems.sumOf { it.price }, "Online (UPI)", true))
+                    lastGeneratedToken = token; cartItems = emptyList(); currentScreen = "order_success"
+                }, onCancel = { currentScreen = "cart" }
+            )
+            "order_success" -> OrderSuccessScreen(
+                tokenNumber = lastGeneratedToken, onGoHome = { currentScreen = "student_home" }
+            )
+            "admin_dashboard" -> AdminDashboardScreen(
+                globalOrders = globalOrders, onLogout = { currentScreen = "landing" }
+            )
+        }
+    }
+}
+
+// ==========================================
+// 5. SEPARATED PORTALS (LANDING & LOGIN)
+// ==========================================
+@Composable
+fun LandingScreen(onStudentClick: () -> Unit, onStaffClick: () -> Unit) {
+    Box(modifier = Modifier.fillMaxSize().background(Brush.verticalGradient(listOf(DarkBackground, Color(0xFF020617))))) {
+        Column(
+            modifier = Modifier.fillMaxSize().padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center
+        ) {
+            Text("🍔", fontSize = 100.sp)
+            Spacer(modifier = Modifier.height(16.dp))
+            Text("Smart Canteen", fontSize = 42.sp, fontWeight = FontWeight.ExtraBold, textAlign = TextAlign.Center)
+            Text("Select your portal to continue", fontSize = 16.sp, color = TextGray)
+            
+            Spacer(modifier = Modifier.height(48.dp))
+            
+            Box(modifier = Modifier.fillMaxWidth().height(80.dp).bounceClick(onStudentClick).background(PrimaryColor, RoundedCornerShape(20.dp)), contentAlignment = Alignment.Center) { 
+                Text("👨‍🎓 Enter as Student", fontSize = 22.sp, fontWeight = FontWeight.Bold) 
+            }
+            Spacer(modifier = Modifier.height(24.dp))
+            Box(modifier = Modifier.fillMaxWidth().height(80.dp).bounceClick(onStaffClick).background(CardBackground, RoundedCornerShape(20.dp)), contentAlignment = Alignment.Center) { 
+                Text("👨‍🍳 Canteen Staff Portal", fontSize = 22.sp, fontWeight = FontWeight.Bold) 
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun StudentLoginScreen(onLoginSuccess: (String) -> Unit, onBack: () -> Unit) {
+    var name by remember { mutableStateOf("") }
+    Column(modifier = Modifier.fillMaxSize().padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
+        Icon(Icons.Default.ArrowBack, contentDescription = "Back", modifier = Modifier.align(Alignment.Start).clickable { onBack() }.size(32.dp))
+        Spacer(modifier = Modifier.height(24.dp))
+        Text("Student Portal", fontSize = 32.sp, fontWeight = FontWeight.Bold, color = PrimaryColor)
+        Spacer(modifier = Modifier.height(40.dp))
+        OutlinedTextField(value = name, onValueChange = { name = it }, label = { Text("Your Full Name") }, modifier = Modifier.fillMaxWidth().background(CardBackground, RoundedCornerShape(16.dp)))
+        Spacer(modifier = Modifier.height(32.dp))
+        Box(modifier = Modifier.fillMaxWidth().height(56.dp).bounceClick { if (name.isNotBlank()) onLoginSuccess(name) }.background(PrimaryColor, RoundedCornerShape(16.dp)), contentAlignment = Alignment.Center) { 
+            Text("Start Ordering", fontSize = 18.sp, fontWeight = FontWeight.Bold) 
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun StaffLoginScreen(onLoginSuccess: () -> Unit, onBack: () -> Unit) {
+    val haptic = LocalHapticFeedback.current
+    var scanning by remember { mutableStateOf(false) }
+    
+    // Bio Scanner Laser Animation
+    val infiniteTransition = rememberInfiniteTransition(label = "Laser")
+    val laserY by infiniteTransition.animateFloat(
+        initialValue = -30f, targetValue = 30f,
+        animationSpec = infiniteRepeatable(tween(800, easing = LinearEasing), RepeatMode.Reverse), label = "Laser"
+    )
+
+    LaunchedEffect(scanning) {
+        if(scanning) {
+            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+            delay(800)
+            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+            delay(800)
+            haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove) // Success Buzz!
+            onLoginSuccess()
+            scanning = false
+        }
+    }
+
+    Column(modifier = Modifier.fillMaxSize().padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
+        Icon(Icons.Default.ArrowBack, contentDescription = "Back", modifier = Modifier.align(Alignment.Start).clickable { onBack() }.size(32.dp))
+        Spacer(modifier = Modifier.height(24.dp))
+        Text("Secured Staff Login", fontSize = 32.sp, fontWeight = FontWeight.Bold, color = Color.Red)
+        Spacer(modifier = Modifier.height(16.dp))
+        Text("Long-Press scanner to simulate Biometrics", color = TextGray)
+        Spacer(modifier = Modifier.height(40.dp))
+        
+        // MOCK BIOMETRIC SCANNER (Vibrates and Launches)
+        Box(
+            modifier = Modifier.size(120.dp).clip(CircleShape).background(if(scanning) Color(0xFF064E3B) else CardBackground)
+                .pointerInput(Unit) { detectTapGestures(onLongPress = { scanning = true }) },
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(Icons.Default.Lock, contentDescription = "Fingerprint", tint = if(scanning) Color(0xFF10B981) else PrimaryColor, modifier = Modifier.size(50.dp))
+            if (scanning) {
+                Box(modifier = Modifier.fillMaxWidth().height(4.dp).offset(y = laserY.dp).background(Color.White))
+            }
+        }
+
+        Spacer(modifier = Modifier.height(40.dp))
+        Text("OR USE PASSWORD", color = TextGray, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+        Spacer(modifier = Modifier.height(16.dp))
+        
+        OutlinedTextField(value = "admin", onValueChange = {}, label = { Text("Staff ID") }, modifier = Modifier.fillMaxWidth().background(CardBackground, RoundedCornerShape(16.dp)))
+        Spacer(modifier = Modifier.height(16.dp))
+        OutlinedTextField(value = "****", onValueChange = {}, label = { Text("Password") }, modifier = Modifier.fillMaxWidth().background(CardBackground, RoundedCornerShape(16.dp)))
+        Spacer(modifier = Modifier.height(32.dp))
+        
+        Box(modifier = Modifier.fillMaxWidth().height(56.dp).bounceClick { onLoginSuccess() }.background(Color.Red, RoundedCornerShape(16.dp)), contentAlignment = Alignment.Center) { 
+            Text("Access Dashboard Securely", fontSize = 18.sp, fontWeight = FontWeight.Bold) 
+        }
+    }
+}
+
+// ==========================================
+// 6. STUDENT HOME (BLUR + CAROUSEL + 3D MENU)
+// ==========================================
+@Composable
+fun CustomerHomeScreen(
+    studentName: String, cartCount: Int, globalOrders: MutableList<Order>,
+    onNavigateToCart: () -> Unit, onAddToCart: (MenuItem) -> Unit, onLogout: () -> Unit
+) {
+    val haptic = LocalHapticFeedback.current
+    val menuItems = listOf(
+        MenuItem("1", "Cheese Burger", "🍔", 120.0, "Juicy patty with double cheese", "Ingredients: Beef, Cheese, Tomato, Onion, Gluten Bun"),
+        MenuItem("2", "Cold Frappe", "☕", 95.0, "Refreshing iced coffee with cream", "Ingredients: Arabica Coffee, Milk, Sugar, Cream, Chocolate Syrup"),
+        MenuItem("3", "Spicy Pizza", "🍕", 250.0, "Wood-fired pizza with jalapenos", "Ingredients: Flour dough, Tomato sauce, Mozzarella, Jalapenos, Oregano"),
+        MenuItem("4", "Loaded Fries", "🍟", 80.0, "Crispy fries topped with cheese sauce", "Ingredients: Potato, Cheese Sauce, Paprika, Salt, Soybean Oil")
+    )
+    
+    val readyOrders = globalOrders.filter { it.studentName == studentName && it.status == "Ready" }
+    val hasNotification = readyOrders.isNotEmpty()
+    
+    // Cinmestic Frosted Glass Blur when notification hits
+    val blurRadius by animateDpAsState(if (hasNotification) 16.dp else 0.dp, label = "BlurState")
+
+    Box(modifier = Modifier.fillMaxSize().background(DarkBackground)) {
+        
+        // BACKGROUND LAYER (Automatically blurs out strongly if Notification appears!)
+        Column(modifier = Modifier.fillMaxSize().blur(blurRadius)) {
+            Row(modifier = Modifier.fillMaxWidth().padding(24.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                Column {
+                    Text("Morning, $studentName 👋", fontSize = 16.sp, color = TextGray)
+                    Text("Hungry today?", fontSize = 28.sp, fontWeight = FontWeight.Bold)
+                }
+                Box(modifier = Modifier.size(50.dp).clip(CircleShape).background(CardBackground).bounceClick(onNavigateToCart), contentAlignment = Alignment.Center) {
+                    Icon(Icons.Default.ShoppingCart, contentDescription = "Cart", tint = PrimaryColor)
+                    if (cartCount > 0) {
+                        Box(modifier = Modifier.align(Alignment.TopEnd).offset((-4).dp, 4.dp).size(20.dp).clip(CircleShape).background(Color.Red), contentAlignment = Alignment.Center) {
+                            Text(cartCount.toString(), color = Color.White, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                        }
+                    }
+                }
+            }
+
+            // AUTO-SCROLLING PROMO HERO CAROUSEL
+            val promoState = rememberLazyListState()
+            val promos = listOf(Triple("50% OFF TODAY", "Try the Spicy Pizza!", Color(0xFFEF4444)), Triple("NEW ARRIVAL", "Refresh with a Frappe", Color(0xFF3B82F6)), Triple("COMBO DEAL", "Burger + Fries", Color(0xFF10B981)))
+            
+            LaunchedEffect(Unit) {
+                while(true) {
+                    delay(4000)
+                    if(!hasNotification) { // Only scroll if they aren't looking at a notification
+                        val next = (promoState.firstVisibleItemIndex + 1) % promos.size
+                        promoState.animateScrollToItem(next)
+                    }
+                }
+            }
+            LazyRow(state = promoState, modifier = Modifier.fillMaxWidth().padding(bottom = 16.dp), contentPadding = PaddingValues(horizontal = 24.dp)) {
+                items(promos) { promo ->
+                    Box(modifier = Modifier.width(300.dp).height(120.dp).padding(end = 16.dp).clip(RoundedCornerShape(20.dp)).background(promo.third).padding(20.dp), contentAlignment = Alignment.CenterStart) {
+                        Column {
+                            Text(promo.first, color = Color.White, fontWeight = FontWeight.ExtraBold, fontSize = 22.sp)
+                            Text(promo.second, color = Color.White, fontSize = 16.sp)
+                        }
+                    }
+                }
+            }
+
+            Text("Popular Menu", modifier = Modifier.padding(horizontal = 24.dp), fontSize = 22.sp, fontWeight = FontWeight.Bold)
+            Text("Tap any card to spin and reveal ingredients!", modifier = Modifier.padding(horizontal = 24.dp), fontSize = 12.sp, color = TextGray)
+            Spacer(modifier = Modifier.height(16.dp))
+
+            LazyColumn(contentPadding = PaddingValues(horizontal = 24.dp, vertical = 8.dp)) {
+                items(menuItems) { item ->
+                    var flipped by remember { mutableStateOf(false) }
+                    val rotation by animateFloatAsState(targetValue = if (flipped) 180f else 0f, animationSpec = tween(durationMillis = 600, easing = FastOutSlowInEasing), label = "3DFlip")
+
+                    Box(
+                        modifier = Modifier.fillMaxWidth().padding(bottom = 16.dp).graphicsLayer { rotationY = rotation; cameraDistance = 16f * density }
+                            .clickable {
+                                flipped = !flipped
+                                haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove) // tiny buzz on flip!
+                            } 
+                    ) {
+                        if (rotation <= 90f) {
+                            Card(shape = RoundedCornerShape(20.dp), colors = CardDefaults.cardColors(containerColor = CardBackground)) {
+                                Row(modifier = Modifier.padding(16.dp).fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                                    Box(modifier = Modifier.size(60.dp).clip(RoundedCornerShape(16.dp)).background(Color(0xFF334155)), contentAlignment = Alignment.Center) { Text(item.emoji, fontSize = 32.sp) }
+                                    Spacer(modifier = Modifier.width(16.dp))
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(item.name, fontSize = 18.sp, fontWeight = FontWeight.Bold)
+                                        Text("₹${item.price}", fontSize = 16.sp, fontWeight = FontWeight.ExtraBold, color = PrimaryColor)
+                                    }
+                                    Box(modifier = Modifier.size(40.dp).clip(CircleShape).background(PrimaryColor).bounceClick { onAddToCart(item) }, contentAlignment = Alignment.Center) { Icon(Icons.Default.Add, contentDescription = "Add", tint = Color.White) }
+                                }
+                            }
+                        } else {
+                            Card(shape = RoundedCornerShape(20.dp), colors = CardDefaults.cardColors(containerColor = CardBackground), modifier = Modifier.graphicsLayer { rotationY = 180f }) {
+                                Column(modifier = Modifier.fillMaxWidth().height(92.dp).padding(16.dp), verticalArrangement = Arrangement.Center) {
+                                    Text("Dietary Info:", fontWeight = FontWeight.Bold, color = PrimaryColor, fontSize = 14.sp)
+                                    Text(item.ingredients, color = Color.White, fontSize = 13.sp)
+                                }
+                            }
+                        }
+                    }
+                }
+                item {
+                    Spacer(modifier = Modifier.height(30.dp))
+                    TextButton(onClick = onLogout, modifier = Modifier.fillMaxWidth()) { Text("Logout", color = Color.Red) }
+                }
+            }
+        }
+        
+        // FOREGROUND OVERLAY: THE CINEMATIC NOTIFICATION 
+        if (hasNotification) {
+            Box(modifier = Modifier.fillMaxSize().background(Color(0x88000000)), contentAlignment = Alignment.Center) {
+                Card(
+                    modifier = Modifier.fillMaxWidth().padding(32.dp),
+                    shape = RoundedCornerShape(24.dp), colors = CardDefaults.cardColors(containerColor = Color(0xFF10B981))
+                ) {
+                    Column(modifier = Modifier.padding(32.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                        Text("🔔", fontSize = 60.sp)
+                        Spacer(modifier = Modifier.height(16.dp))
+                        Text("ORDER READY!", fontWeight = FontWeight.ExtraBold, color = Color.White, fontSize = 28.sp)
+                        Spacer(modifier = Modifier.height(8.dp))
+                        readyOrders.forEach { order ->
+                            Text("Show Token ${order.token} to the cashier right now to collect your food.", color = Color.White, textAlign = TextAlign.Center)
+                        }
+                        Spacer(modifier = Modifier.height(24.dp))
+                        Box(modifier = Modifier.fillMaxWidth().height(50.dp).bounceClick { 
+                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                            globalOrders.removeAll(readyOrders)
+                        }.background(Color.White, RoundedCornerShape(12.dp)), contentAlignment = Alignment.Center) {
+                            Text("I'm on my way!", color = Color(0xFF10B981), fontWeight = FontWeight.Bold)
+                        }
+                    }
+                }
+                
+                // Triggers massive vibration on notification appearance
+                LaunchedEffect(Unit) {
+                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                    delay(200)
+                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                }
+            }
+        }
+    }
+}
+
+// ==========================================
+// 7. CART, QR PAYMENT & SUCCESS SCREENS
+// ==========================================
+@Composable
+fun CartScreen(cartItems: List<MenuItem>, onCheckoutOnline: () -> Unit, onCheckoutCounter: () -> Unit, onGoBack: () -> Unit) {
+    val totalAmount = cartItems.sumOf { it.price }
+
+    Column(modifier = Modifier.fillMaxSize()) {
+        Row(modifier = Modifier.fillMaxWidth().padding(24.dp), verticalAlignment = Alignment.CenterVertically) {
+            Icon(Icons.Default.ArrowBack, contentDescription = "Back", modifier = Modifier.clickable { onGoBack() }.size(32.dp))
+            Spacer(modifier = Modifier.width(16.dp))
+            Text("Your Drop-in Cart", fontSize = 24.sp, fontWeight = FontWeight.Bold)
+        }
+        
+        if (cartItems.isEmpty()) {
+            Box(modifier = Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) { Text("Your cart is empty!", fontSize = 20.sp, color = TextGray) }
+        } else {
+            LazyColumn(modifier = Modifier.weight(1f).padding(horizontal = 24.dp)) {
+                items(cartItems) { item ->
+                    Card(modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp), colors = CardDefaults.cardColors(containerColor = CardBackground)) {
+                        Row(modifier = Modifier.padding(16.dp).fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                            Text("${item.emoji}  ${item.name}", fontSize = 18.sp, fontWeight = FontWeight.SemiBold)
+                            Text("₹${item.price}", fontSize = 18.sp, color = PrimaryColor)
+                        }
+                    }
+                }
+            }
+            Card(shape = RoundedCornerShape(topStart = 32.dp, topEnd = 32.dp), colors = CardDefaults.cardColors(containerColor = CardBackground), modifier = Modifier.fillMaxWidth()) {
+                Column(modifier = Modifier.padding(32.dp)) {
+                    Text("Total: ₹$totalAmount", fontSize = 28.sp, fontWeight = FontWeight.ExtraBold)
+                    Spacer(modifier = Modifier.height(24.dp))
+                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                        Box(modifier = Modifier.weight(1f).height(60.dp).bounceClick(onCheckoutCounter).background(Color(0xFF334155), RoundedCornerShape(16.dp)), contentAlignment = Alignment.Center) { Text("Pay Cash", fontWeight = FontWeight.Bold) }
+                        Spacer(modifier = Modifier.width(16.dp))
+                        Box(modifier = Modifier.weight(1f).height(60.dp).bounceClick(onCheckoutOnline).background(PrimaryColor, RoundedCornerShape(16.dp)), contentAlignment = Alignment.Center) { Text("Online (QR)", fontWeight = FontWeight.Bold) }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun PaymentQRScreen(amount: Double, onPaymentVerified: () -> Unit, onCancel: () -> Unit) {
+    val haptic = LocalHapticFeedback.current
+    val infiniteTransition = rememberInfiniteTransition(label = "float")
+    val floatAnim by infiniteTransition.animateFloat(initialValue = -30f, targetValue = 30f, animationSpec = infiniteRepeatable(animation = tween(2000, easing = EaseInOutSine), repeatMode = RepeatMode.Reverse), label = "FloatingQR")
+
+    Column(modifier = Modifier.fillMaxSize().padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
+        Text("Scan Hologram to Pay", fontSize = 28.sp, fontWeight = FontWeight.Bold)
+        Text("₹$amount via UPI", fontSize = 24.sp, color = PrimaryColor, fontWeight = FontWeight.ExtraBold)
+        Spacer(modifier = Modifier.height(50.dp))
+        
+        Box(modifier = Modifier.offset(y = floatAnim.dp).size(250.dp).clip(RoundedCornerShape(16.dp)).background(Color.White).padding(16.dp), contentAlignment = Alignment.Center) {
+            Column(modifier = Modifier.fillMaxSize(), verticalArrangement = Arrangement.SpaceBetween) {
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                    Box(modifier = Modifier.size(60.dp).background(Color.Black))
+                    Box(modifier = Modifier.size(60.dp).background(Color.Black))
+                }
+                Box(modifier = Modifier.fillMaxWidth().height(20.dp).background(Color.Black))
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                    Box(modifier = Modifier.size(60.dp).background(Color.Black))
+                    Box(modifier = Modifier.size(90.dp).background(Color.Black))
+                }
+            }
+        }
+        
+        Spacer(modifier = Modifier.height(60.dp))
+        Text("Waiting for cashier confirmation...", color = TextGray)
+        Spacer(modifier = Modifier.height(16.dp))
+        
+        Box(modifier = Modifier.fillMaxWidth().height(60.dp).bounceClick {
+            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+            onPaymentVerified()
+        }.background(Color(0xFF10B981), RoundedCornerShape(16.dp)), contentAlignment = Alignment.Center) { 
+            Text("Simulate Payment Success ✅", fontSize = 18.sp, fontWeight = FontWeight.Bold) 
+        }
+        Spacer(modifier = Modifier.height(16.dp))
+        TextButton(onClick = onCancel) { Text("Cancel Order", color = Color.Red) }
+    }
+}
+
+@Composable
+fun OrderSuccessScreen(tokenNumber: String, onGoHome: () -> Unit) {
+    val haptic = LocalHapticFeedback.current
+    LaunchedEffect(Unit) {
+        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+        delay(100)
+        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+    }
+    
+    Box(modifier = Modifier.fillMaxSize()) {
+        Column(modifier = Modifier.fillMaxSize().background(DarkBackground).padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
+            Text("✅", fontSize = 100.sp)
+            Spacer(modifier = Modifier.height(24.dp))
+            Text("Payment Verified!", fontSize = 32.sp, fontWeight = FontWeight.ExtraBold, color = Color.White)
+            Text("Please wait for your token number to be called.", fontSize = 16.sp, color = TextGray, textAlign = TextAlign.Center)
+            
+            Spacer(modifier = Modifier.height(40.dp))
+            
+            Card(shape = RoundedCornerShape(20.dp), colors = CardDefaults.cardColors(containerColor = PrimaryColor), modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp)) {
+                Column(modifier = Modifier.padding(32.dp).fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text("YOUR TOKEN NO.", fontSize = 14.sp, color = Color.White, fontWeight = FontWeight.Bold)
+                    Text(tokenNumber, fontSize = 60.sp, fontWeight = FontWeight.ExtraBold, color = Color.White)
+                }
+            }
+            Spacer(modifier = Modifier.height(60.dp))
+            Box(modifier = Modifier.fillMaxWidth().height(60.dp).bounceClick(onGoHome).background(Color.White, RoundedCornerShape(16.dp)), contentAlignment = Alignment.Center) { Text("Back to Menu", fontSize = 18.sp, color = DarkBackground, fontWeight = FontWeight.Bold) }
+        }
+        AppConfetti() // Physics Burst
+    }
+}
+
+// ==========================================
+// 8. ADMIN DASHBOARD
+// ==========================================
+@Composable
+fun AdminDashboardScreen(globalOrders: MutableList<Order>, onLogout: () -> Unit) {
+    val haptic = LocalHapticFeedback.current
+    Column(modifier = Modifier.fillMaxSize().padding(24.dp)) {
+        Row(modifier = Modifier.fillMaxWidth().padding(top = 16.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+            Column {
+                Text("Staff Tracking System", fontSize = 24.sp, fontWeight = FontWeight.Bold, color = Color.White)
+                Text("Manage Live Orders", fontSize = 16.sp, color = PrimaryColor)
+            }
+            Box(modifier = Modifier.size(44.dp).clip(CircleShape).background(Color(0x33FF0000)).bounceClick(onLogout), contentAlignment = Alignment.Center) { Icon(Icons.Default.ExitToApp, contentDescription = "Logout", tint = Color.Red) }
+        }
+        
+        Spacer(modifier = Modifier.height(24.dp))
+        
+        if (globalOrders.isEmpty()) {
+            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { Text("No active orders.", color = TextGray) }
+        } else {
+            LazyColumn {
+                items(globalOrders) { order ->
+                    Card(shape = RoundedCornerShape(20.dp), colors = CardDefaults.cardColors(containerColor = CardBackground), modifier = Modifier.fillMaxWidth().padding(bottom = 16.dp)) {
+                        Column(modifier = Modifier.padding(20.dp).fillMaxWidth()) {
+                            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                                Text(order.token, fontSize = 24.sp, fontWeight = FontWeight.ExtraBold, color = PrimaryColor)
+                                Text(if (order.status == "Ready") "READY ✅" else "Preparing ⏳", color = if (order.status == "Ready") Color(0xFF10B981) else Color.Yellow, fontWeight = FontWeight.Bold)
+                            }
+                            Spacer(modifier = Modifier.height(8.dp))
+                            
+                            Text("Customer: ${order.studentName}", fontWeight = FontWeight.SemiBold, fontSize = 20.sp, color = Color.White)
+                            Text("Items: " + order.items.joinToString { it.name }, fontSize = 14.sp, color = TextGray)
+                            
+                            Spacer(modifier = Modifier.height(12.dp))
+                            
+                            val paymentStatus = if (order.isPaid) "Paid via ${order.paymentMethod}" else "Unpaid (${order.paymentMethod})"
+                            val paymentColor = if (order.isPaid) Color(0xFF10B981) else Color.Red
+                            Text("₹${order.totalAmount} • $paymentStatus", fontSize = 14.sp, color = paymentColor, fontWeight = FontWeight.Medium)
+                            
+                            Spacer(modifier = Modifier.height(16.dp))
+                            
+                            if (order.status == "Preparing") {
+                                Box(modifier = Modifier.fillMaxWidth().height(48.dp).bounceClick {
+                                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                    val index = globalOrders.indexOf(order)
+                                    if (index != -1) globalOrders[index] = order.copy(status = "Ready")
+                                }.background(PrimaryColor, RoundedCornerShape(12.dp)), contentAlignment = Alignment.Center) {
+                                    Text("Mark as Ready & Notify Student", fontWeight = FontWeight.Bold)
+                                }
+                            } else {
+                                Box(modifier = Modifier.fillMaxWidth().height(48.dp).bounceClick { globalOrders.remove(order) }
+                                    .background(Color(0x33FFFFFF), RoundedCornerShape(12.dp)), contentAlignment = Alignment.Center) {
+                                    Text("Finish & Clear Order", color = Color.White)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
